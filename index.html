@@ -1,0 +1,376 @@
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="">
+    <meta name="author" content="">
+
+    <title>CS 111 Scribe Notes Lecture 12</title>
+
+    <!-- Bootstrap Core CSS -->
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.5/css/bootstrap.min.css" type="text/css">
+
+    <!-- Custom Fonts -->
+    <link href='http://fonts.googleapis.com/css?family=Open+Sans:300italic,400italic,600italic,700italic,800italic,400,300,600,700,800' rel='stylesheet' type='text/css'>
+    <link href='http://fonts.googleapis.com/css?family=Merriweather:400,300,300italic,400italic,700,700italic,900,900italic' rel='stylesheet' type='text/css'>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.4.0/css/font-awesome.min.css">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/creative.css" type="text/css">
+
+
+</head>
+
+<body id="page-top">
+
+    <div class="container">
+
+        <h1>File System Implementation</h1>
+        <h2>CS 111 Lecture 12</h2>
+        <h4>February 22, 2016</h4>
+        <h4>By: Andy Kuang, Patrick Deshpande, Rishub Kumar, and Stan Jiang</h4>
+
+        <br>
+
+        <h3>Table of Contents</h3>
+        <div class="menu">
+        <ol type="I">
+        <li class="menu"><a href="#fragmentation">Fragmentation</a>
+        	<ol type="i">
+        			<li class="menu"><a href="#holeyfiles">Holey Files</a></li>
+        			<li class="menu"><a href="#holeydatabase">Holey Database</a></li>
+        	</ol>
+        </li>
+
+        <li class="menu"><a href="#fsimplementation">File System Implementation (Continued)</a>
+        	<ol type="i">
+        			<li class="menu"><a href="#fsabstractionlayers">Layers of Abstraction</a></li>
+        			<li class="menu"><a href="#mounttable">Mount Table</a></li>
+        			<li class="menu"><a href="#fnresolution">File Name Resolution</a></li>
+        			<li class="menu"><a href="#symlinks">Symbolic Links</a></li>
+        			<li class="menu"><a href="#specialfiles">Special Files</a></li>
+        			<li class="menu"><a href="#chroot">Changing Root</a></li>
+        		</ol>
+        	</li>
+
+        <li class="menu"><a href="#fscorruption">File System Data Corruption</a>
+        	<ol type="i">
+        			<li class="menu"><a href="#baddata">Bad Sector Data</a></li>
+        			<li class="menu"><a href="#shred">Intentional Data Corruption/Removal</a></li>
+        	</ol>
+        </li>
+        </ol>
+
+    </div>
+
+
+
+
+
+
+
+
+    <a id="fragmentation"></a>
+    <h2>Fragmentation</h2>
+
+    <p>Recall the inode and indirect block structure:</p>
+
+    <!-- <img src="inode-block.png" alt="Inode block" height="718" width="975"> -->
+
+    <p>What kind of fragmentation and wasted space can we get with this structure?</p>
+
+    <p>If the file size is 0 bytes, we have no fragmentation. Technically, we have 48 bytes of inode space wasted: 4 bytes per direct block number plus 4 bytes for the indirect block number plus 4 bytes for the indirect^2 block number, which are all unused. If the file size is 1 byte, assuming a block size of 8 KiB (8192 bytes), we have 8191 bytes of wasted space in the block allocated for the file, plus 44 inode bytes wasted.</p>
+
+    <a id="holeyfiles"></a>
+    <h3>Holey Files</h3>
+
+    <p>What if we create an empty file, seek very far into it, and write at that location? Consider the following code:</p>
+
+    <div class="well"><code>
+        int fd = open("foo", O_CREAT|O_WRONLY|O_TRUNC, 066);<br>
+        if (lseek(fd, 1000000000000, SEEK_SET) &lt; 0)<br>
+        &nbsp;&nbsp;error();<br>
+        write(fd, "hello", 5);<br>
+    </code></div>
+
+    <p>This requires the creation of a doubly indirect block.</p>
+
+<!--     <img src="inode-holey.png" alt="Inode holey" height="300" width="683">
+ -->
+    <p>This is called a "holey file". Note that the file size is 1000000000005 bytes (although clearly it does not take up that much disk space). In this case, the wasted space is 44 bytes in the inode, 8188 bytes in the indirect^2 block, 8188 bytes in the indirect block, and 8187 bytes in the data block itself.</p>
+
+    <p>Even though the file "appears" to be a trillion bytes in size, if we run the following command:</p>
+
+    <div class="well"><code>
+      $ ls -ls foo
+    </code></div>
+
+    <p>We will see that foo doesn't actually use up very much disk space (the <code>-s</code> argument to ls asks "how much space" does the file use, in blocks).</p>
+
+    <a id="holeydatabase"></a>
+    <h3>Holey Database</h3>
+
+    <p>What if we try to apply this type of system design to a relational database, for instance?</p>
+
+    <!-- <img src="inode-holey-relational.png" alt="Holey relational database" height="167" width="700"> -->
+
+    <p>Note that the database, which is a level of abstraction above the underlying file system, has many zero bytes. However, these are not actually on disk (similar to the lseek example above).</p>
+
+    <p>What problem can arise due to this? The underlying system can exhaust disk space before the database does. For example, the database may see these zeros and attempt to write to them/fill them with some data. Although the database sees this as empty space, the underlying system may actually be full (the disk has no space), since it does not actually store those zeros on disk.</p>
+
+    <p>Another downside to this system design is that it is somewhat slower because of non-sequential access; note that we have indirection until we finally access the raw data. In order to get to the data, the CPU and disk have to go through the data structure.</p>
+
+    <br>
+    <a id="fsimplementation"></a>
+    <h2>File System Implementation (Continued)</h2>
+
+    <a id="fsabstractionlayers"></a>
+    <h3>Layers of Abstraction</h3>
+
+    <p>The following are layers of abstraction in a file system design:</p>
+
+    <ul>
+        <li>Symbolic links</li>
+        <li>File names (have "/")</li>
+        <li>File name components (don't have "/")</li>
+        <li>inodes</li>
+        <li>File systems and mounts</li>
+        <li>Partitions</li>
+        <li>Blocks (usually a power of two multiple of sector length, say 8 KiB)</li>
+        <li>Sectors (fairly small, say 512 bytes)</li>
+    </ul>
+
+    <p>Here are some examples of partitions:</p>
+
+    <!-- <img src="partition.png" alt="partition" height="182" width="724"> -->
+
+    <p>These separate file systems are used to limit the damage caused by filling up or corrupting a separate file system. For example, if we completely fill up <code>/usr</code> or <code>/home</code>, it does not mean that <code>/boot</code> is also out of space! Or else kernel space issues will result.</p>
+
+
+    <a id="mounttable"></a>
+    <h3>Mount Table</h3>
+
+    <p>The mount table is the record of active file systems. Here's what it might look like, where the column "file system" denotes which file system the device, inode pair should map to:</p>
+
+    <div class="well"><code>
+        dev&nbsp;&nbsp;ino&nbsp;&nbsp;&nbsp;file system<br>
+        ---&nbsp;&nbsp;----&nbsp;&nbsp;-----------<br>
+        1&nbsp;&nbsp;&nbsp;&nbsp;97&nbsp;&nbsp;&nbsp;&nbsp;...<br>
+        1&nbsp;&nbsp;&nbsp;&nbsp;1096&nbsp;&nbsp;...<br>
+        3&nbsp;&nbsp;&nbsp;&nbsp;27&nbsp;&nbsp;&nbsp;&nbsp;...<br>
+        2&nbsp;&nbsp;&nbsp;&nbsp;35&nbsp;&nbsp;&nbsp;&nbsp;...<br>
+        ...&nbsp;&nbsp;...&nbsp;&nbsp;&nbsp;...<br>
+    </code></div>
+
+    <p>Side note: consider a path <code>"C:\etc\passwd"</code> in Windows. The <code>"C:"</code> part denotes the file system, and the <code>"\etc\passwd"</code> part is the file name. In Unix, however, the mount table takes care of which file system device/inode pairs belong to. Therefore, the <code>"C:"</code> part is abstracted away from the user (which is why we don't see paths like that).</p>
+
+    <p>What is a potential problem with this design? We might have loops in the mount table, creating an infinitely long tree. For example, if our mount table has the following information:</p>
+
+    <div class="well"><code>
+      /etc --> file sys 3<br>
+      /etc/foo --> file sys 4<br>
+      /etc/foo/bar --> file sys 1<br>
+    </code></div>
+
+    <p>How do we fix this? Easy. The system call "mount" will only succeed if the target file system is not already mounted. For example, <code>mount("/etc/foo", "/dev/rst/03", ...)</code>, fails if <code>/dev/rst/03</code> is already mounted. An exception to this is the concept of loopback mounts, in which case already-mounted file systems are mountable, and you must be careful about loops.</p>
+
+    <p>Note that with this implementation, we can easily support multiple types of file systems at once. For example, <code>/usr</code> could be type ext4, <code>/home</code> could be type vfat, and <code>/home/eggert</code> could be type nfs.</p>
+
+    <p>How are all of these different file system implementations supported? By using object-oriented (OO) programming. There is a common interface (API) for each file system implementation; in OO terms, the file system itself is like an object, and the Virtual File System (VFS) layer provides an OO implementation in C. You essentially implement a file system by subclassing the VFS layer, which provides standard operations, such as read/write (basic I/O), unlink, rename (metadata operations), etc.</p>
+
+    <p>As a historical sidenote: VFS object orientation was originally invented for NFS (Network File System) in 1985!</p>
+
+    <a id="fnresolution"></a>
+    <h3>File Name Resolution</h3>
+
+    <p>How are file names resolved and paths followed? For example, if a user runs <code>open("abc/def/ghi", ...)</code>? Internally, <code>namei</code> is used to map strings to their device, inode pair. It does a left-to-right traversal over a file name, exploring directories and keeping track of the current directory's inode. For example, after exploring <code>abc/def</code>, the current directory inode will be <code>def</code>'s inode, and the file name component to resolve is <code>ghi</code>. The new device, inode pair will then attempt to be resolved.</p>
+
+    <p>If a file is missing during this traversal process (for example, if <code>def</code> is nowhere to be found once <code>abc</code> is the current directory), then <code>errno</code> is set to <code>ENOENT</code>. If search permissions (the <code>x</code> bit) are missing on a directory to be explored, <code>errno</code> is set to <code>EPERM</code>.</p>
+
+    <p>The file name resolution process starts its search in the current working directory. This is a per-process piece of information. If the file name starts with "/", however, we start the search at the root directory. The root directory is also a per-process piece of information.</p>
+
+    <a id="symlinks"></a>
+    <h3>Symbolic Links</h3>
+
+    <p>How does file name expansion work on symbolic links? Say we run <code>ls</code> and get the following:</p>
+
+    <div class="well"><code>
+        $ ls -l a/b<br>
+        &nbsp;&nbsp;lrwxrwxrwx eggert eggert 23 Jan 2015 b -> foo/bar 
+    </code></div>
+
+    <p>Then, the file name <code>a/b/c</code> will be automatically resolved to <code>a/foo/bar/c</code>. Our cursor will be switched to the expanded name.</p>
+
+    <h4>Symbolic Links vs. Hard Links</h4>
+
+    <ul>
+      <li>Symbolic links can cross file system boundaries; hard links cannot</li>
+      <li>Symbolic links can link to a directory; hard links cannot</li>
+      <li>Symbolic links can link to a nonexistent file; hard links cannot</li>
+    </ul>
+
+    <p>For example, if our file system tree looks like the following, we are still allowed to run <code>$ ln -s /bin/sh /usr/bin/sh</code>:</p>
+
+    <!-- <img src="symlink.png" alt="Symlink" height="450" width="542"> -->
+
+    <p>Are there any potential problems with any of these rules about symbolic links? Note that due to the fact that symbolic links can link to directories, we can get a loop, leading to an infinitely long file name. For example if we run <code>$ ln -s ./ ./a/b/c</code>, then the path <code>a/b/c/a/b/c/a/b/c/a/b/c/a/b/c/...</code> is valid and might be traversed during file name resolution! To fix this problem, the system places a hard cap on the number of symbolic link expansions allowed before <code>namei</code> fails, returning <code>ELOOP</code> (for example, at most 20 soft links can be traversed to get from the source to the target link).</p>
+
+    <h4>Symbolic Link Implementation</h4>
+
+    <p>Do symbolic links have their own inodes (and thus inode numbers) in the file system? This depends on the implementation.</p>
+
+    <p>If <b>YES</b>: there are two plausible implementations. In one, the symlink's inode has a pointer to the symlink's contents. In another, the symlink contains a string, representing a file name. Then, whenver this symlink is encountered, a filename expansion takes place, replacing the symlink's file name with the file name contained in its inode.</p>
+
+    <p>In this case, note that we can create hard links to symbolic links; in this case, two separate directory entries would contain the same inode number, which corresponds to the symbolic link's inode! The following example illustrates this:</p>
+
+    <div class="well"><code>
+        $ ln -s a b<br>
+        $ ln b c<br>
+        $ ls -l<br>
+        &nbsp;&nbsp;2&nbsp;... b -> a<br>
+        &nbsp;&nbsp;2&nbsp;... c -> a<br>
+        $ mv c /some/other/dir<br>
+    </code></div>
+
+    <p>If <b>NO</b>: the symlink information must be entirely contained within the directory entry for the symlink. While an ordinary file might have the file name and the inode number in the directory entry, perhaps the symlink would instead have the link name and the string corresponding to the linked (target) file.</p>
+
+    <p>As a side note/tangent, while on the topic of file system design... Some systems have an optimization to actually store very small files in the inode itself, without requiring any additional data blocks. For example, <code>$ ls -ls</code> might show a file length of 7 bytes but show 0 bytes of disk space usage, since all 7 bytes of the file's data are self-contained in the inode.</p>
+
+    <p>As usual, there are potential pitfalls and technicalities...</p>
+
+    <p>What do permissions on a symbolic link mean? If we run <code>ls</code>, we might see <code>lrwxrwxrwx</code>. The <code>l</code> indicates that the file is a symlink; but what does it mean for the symlink to have specific permissions? Actually, these permissions are junk; they don't mean anything at all. No matter what the permissions say, <i>a symlink can be read but not written to</i>.</p>
+
+    <p>What about the owner and group of a symlink? This is mostly junk as well. Anybody can read to a symlink, and as noted above, nobody can write to one. However, the owner and group are used for quotas (e.g. the symlink will take up space on certain disk quotas depending on who owns it).</p>
+
+    <p>How does <code>ls</code> know a file is a symbolic link, and how does it know the corresponding character expansion that should take place? The following system calls help out:</p>
+
+    <ul>
+      <li><code>lstat</code>, which is just like <code>stat</code>, except that <code>lstat</code> does NOT follow symlinks, while <code>stat</code> does. Therefore, <code>lstat</code> can give us information about the symlink itself, instead of information about the file that it points to.</li>
+      <li><code>readlink</code>, which reads the value of a symbolic link (that is, the character expansion). For example: <code>readlink("b", buf, bufsize)</code>, where <code>b</code> is a symbolic link.</li>
+      <li><code>unlink</code>, which deletes a "name". Similarly to <code>lstat</code>, this does NOT follow symlinks, allowing us to delete a symlink without deleting the underlying file as well.</li>
+    </ul>
+
+    <a id="specialfiles"></a>
+    <h3>Special Files</h3>
+
+    <p>If we run <code>$ ls -l /dev/null</code>, we will see something like <code>crw-rw-rw 1,3 /dev/null</code>. Note that where the size of the file typically is, instead we see <code>1,3</code>. What does this mean? These numbers are the driver number (1) and the device number (3). Notice that the file type is <code>c</code>. This is a special file type. <code>b</code> and <code>p</code> are some other special file types. Other notable special files include <code>/dev/zero</code> and <code>/dev/full</code>.</p>
+
+    <p>Say we accidentally delete <code>/dev/null</code>. This is very bad, because any programs that write to that location might now instead be writing to actual disk space, and the file will hog disk space with junk output that should have been discarded. As an example of special file creation, we can create <code>/dev/null</code> like so:</p>
+
+    <div class="well"><code>
+        $ mknod /dev/null c 1 3
+    </code></div>
+
+    <p>Also, note that since <code>/dev/null</code> has its own inode, we can link to it:</p>
+
+    <div class="well"><code>
+        $ ln /dev/null haha
+    </code></div>
+
+    <p>Another special file is a named pipe (FIFO) file, which behaves like a pipe but lives on disk instead of in memory:</p>
+
+    <div class="well"><code>
+        $ mkfifo foo<br>
+    $ ls foo<br>
+    &nbsp;&nbsp;prw-rwrw- ______ foo<br>
+    $ cat foo<br>
+    </code></div>
+
+    <p>The command <code>$ cat foo</code> will hang until some other terminal does something like the following:</p>
+
+    <div class="well"><code>
+        $ echo blah > foo
+    </code></div>
+
+    <p>At this point, the original terminal will stop hanging, and <code>cat</code> will output <code>blah</code> to the console.</p>
+
+    <a id="chroot"></a>
+    <h3>Changing Root</h3>
+
+    <p>The root directory can be changed using the <code>chroot</code>, which changes the apparent root for the current process and all children processes. Note that if we change our root from <code>\</code> to <code>\usr</code>, we can no longer see files "above us" in the directory tree, and therefore we can not change root back upwards. <code>chroot</code> is typically used to create a "chrooted jail" where we can sandbox potentially dangerous programs; any damage that the program does will be isolated to the "chrooted jail", which is the only portion of the file system that the process can see.</p>
+
+    <p>Note that by convention, <code>/..</code> is equivalent to <code>/</code>. That is, the parent of root is root itself. This enforces the inability of a process to navigate upwards beyond root (as detailed above).</p>
+
+    <p>Is there a potential problem with allowing the root directory to be changed? Consider a situation where an attacker wants to become superuser. He runs <code>su</code> and is given a password prompt:</p>
+
+    <div class="well"><code>
+        $ su<br>
+        &nbsp;&nbsp;password: 
+    </code></div>
+
+    <p>One thing the attacker might try is to create the following directory tree structure:</p>
+
+    <!-- <img src="chroot.png" alt="chroot" height="608" width="525"> -->
+
+    <p>The attacker could alter the contents of <code>etc</code> within <code>playpen</code>, for example, by altering <code>passwd</code> to set the root password to whatever he wishes (assuming he salts and hashes it correctly). He could then use <code>chroot</code> to set the root directory to <code>/home/eggert/playpen</code>. Then, during a subsequent attempt to gain superuser access with <code>su</code> will look at this modified password information!</p>
+
+    <p>Becasue of this vulnerability that is introduced by <code>chroot</code>, there is one more condition: only the superuser can use <code>chroot</code>!</p>
+
+    <br>
+    <a id="fscorruption"></a>
+    <h2>File System Data Corruption</h2>
+
+    <a id="baddata"></a>
+    <h3>Bad Sector Data</h3>
+
+    <p>What happens if we have a bad sector? For example, say the underlying disk has a failure on a specific sector. In this case, the data is corrupted. If we try to do something like <code>open("a/b/c", ...)</code> where <code>b</code> is a symlink with contents in the bad block, we have a serious problem.</p>
+
+    <p>How should the file system handle this problem? Although the data is not readable, we don't want to crash the entire operating system. Instead, the proper convention is to make the I/O system calls fail and set <code>errno</code> to <code>-EIO</code>.</p>
+
+    <a id="shred"></a>
+    <h3>Intentional Data Corruption/Removal</h3>
+
+    <p>What if we want to corrupt or remove data intentionally (short of melting our hard drive into a ball of scrap metal), for example, before an attacker can get to it? Let's consider a few possible methods to do this:</p>
+
+    <ul>
+      <li>
+        <code>$ chmod 0 file</code><br>
+        <p>Does this work? No. The attacker can still mount the file system himself, run <code>$ chmod 444 file</code>, and have access to the file.</p>
+      </li>
+      <li>
+        <code>$ rm file</code><br>
+        <p>Assuming the underlying inode has just 1 link, and the file is not open somewhere. Does this work? No. Although the blocks containing the sentitive data have been freed/returned to the OS, the data is still living on the disk, unaltered, and can be accessed by an attacker.</p>
+      </li>
+      <li>
+        <code>$ shred file</code><br>
+        <p>This is more like it. <code>shred</code> overwrites the file multiple times with random data, then it unlinks it, thereby effectively overwriting the original, sensitive-data-containing sectors. Why does it overwrite the file multiple times? With sufficient technology, even after an overwrite, an attacker might be able reclaim old data based due to magnetic residue on the hard drive ("data remanence"). Therefore, the more times the file is overwritten, the less likely any data will be recoverable.</p>
+      </li>
+    </ul>
+
+    <p>Are there any problems with <code>shred</code>? Note that an attacker can still deduce a pattern of holes in the original file as well as its likely size by analyzing the shredded memory. Another potential problem is that the file system might keep additional data about a file elsewhere (including, possibly, an entire backup of the file!), which will be unaffected by shredding the original. How do we fix this? We simply must make sure to shred at the partition level, not the file level. For example, <code>$ shred /dev/dsk/03</code>.</p>
+
+    <p>Note that shred is pretty slow... Can we "shred" an entire file system in, say, a millisecond? Yes. Simply start with an encrypted file system, then throw away the key. Without the key, the encrypted data is irrecoverable.</p>
+
+    </div>
+
+
+
+
+
+
+
+
+
+
+
+
+    <!-- jQuery -->
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script>
+
+    <!-- Bootstrap Core JavaScript -->
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.5/js/bootstrap.min.js"></script>
+
+    <!-- Custom Theme JavaScript -->
+    <script src="js/creative.js"></script>
+
+    <!-- Scrolling -->
+    <script src="js/customscroll.js"></script>
+
+</body>
+
+</html>

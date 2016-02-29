@@ -1,0 +1,259 @@
+Lecture 12 (2/22) 
+
+File System cont'd
+==================
+
+Hybrid Data Structure 
+- Exists in main memory and on disk
+  - Presistence (Disk)
+  - Performance (RAM)
+
+Linux Ext3 File System
+======================
+- Directory Entry Structure  (Ext3 Dir Entry.png)
+	32-bit inode number
+	16-bit directory entry length (where the next inode starts) 	|
+	8-bit  name length			  									|- varying length
+	8-bit  file type              									|- entries
+	10-byte file name             									|
+
+[ ---- INODE - 32 ---- | -- DIR LEN - 16 -- | -- NAME LEN - 8 -- | -- TYPE - 8 -- | -- NAME - 10 B -- ]
+Why is Directory Entry Length so big (16-bit)?
+When ext3 wants to delect a directory entry, it just increases the record of the previous entry to the end of te deleted entry.
+- unlink("foo.bar")
+	- lets you remove directory entries
+	- 16-bit so it can overwrite the next entry, thereby deleting that file entry
+- link("baz", xxx)
+	- goes through the list and finds and entry with sufficiently large number to fit the new file
+
+> The 0th inode entry is left empty so it doesn't need to be unlinked since there is no preceeding 
+  inode entry that can overwrite it.
+
+
+- Inode: in main memory and on disk, contains metadata for file
+	- an array
+	- cached version of what's on disk
+	- fixed size
+	- contains number, no names
+	- 0 means that the file doesn't exist, starts at 1
+
+- Inode structure:  (Inode Entry.png)
+	owner (32b-it)
+	timestamp (last modified time)
+	access time (mtime, sysclock)
+	inode change (ctime)
+	permissions 
+	type (directory/regular file/...) < both in inode and in cached directory entry
+
+Inode [ INFO re FILE]
+Dir Entry [INFO re NAME OF FILE]
+
+Why cache type and not other?
+	- Type cannot change: inmutable
+	- Other data can change
+Inode does't tell you the file name
+	- File name built atop inode
+	- Levels of abstraction in file system
+
+(Lvl of Abstration.png)
+------------------------------------------------------------------------- symbolicl inks
+				SHORTCUTS IN THE FILE SYSTEM GRAPH
+------------------------------------------------------------------------- files and directories (names)
+		[ 1 ]    [ 2 ]     [       3       ]    [    4    ]
+------------------------------------------------------------------------- files
+		[  1  ]   [        2       ]   [ 3 ]  [        4        ]
+------------------------------------------------------------------------- blocks (8192 bytes)
+|        |        |        |        |        |        |        |        |
+------------------------------------------------------------------------- sectors (2048 bytes)
+|  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+-------------------------------------------------------------------------
+
+Remove A File Securly  (Unlink Dir Entry.gif)
+=====================
+- unlink("foo")  <-- removes a directory entry
+	- watch out! link count coded still non-zero
+	assume link count is zero
+
+$ touch secret
+$ chmod 600 secret
+$ ls -l
+-rw------- 0 ........ secret  ( 0 refers the link count)
+
+1. File permissions checked by 'open'
+2. Storage for a file with link count 0 is not reclaimed if a process has the file opened
+
+- Shredding a file
+$ shred file   --prints error if any step fails
+	- open file
+	- stat to get size
+	- overwrite file with random data (3 times) <-- may use new blocks for efficiency
+	- closes file
+	- unlinks
+
+File locks in Linux (lockf / flock)
+	[ file | subrange |    |              ]
+									read lock
+									write lock
+    ^---- Voluntary! Why? 
+    	  Prevents program from getting locks to stop another process 
+
+
+
+1) How "root" can defeat shred
+	- can read from any directory at any time
+	/dev/rdick/00 (block special device)
+		-> can read from shreded file's original sector
+
+	$ shred /dev/rdisk/00
+	[      |     |      |     |     |bad sec|      |     ]  (Bad Sector.png)
+	- bad sectors, hardware substitures bad sectory with replacement sectors (linked)
+	- bad sectors may still contain sensitive information that cannot be overwritten
+
+2) Mechanical limitations 
+	- the seek needle for the drive does not write exactly over where the old data is
+	- there can be tiny differences in the place where the old data was. 
+	- places that are not exactly overwritten can be read to reclaim sensitive data
+	- this is the reason why shred writes random data 3 times; tries to overwrite as much as possible
+
+How To Interpret File Names  (cat abd.gif)
+===========================
+The name of a file is related to a number that refers to the place from the root of the directories
+
+namei : "a/b/c" -> 12963
+
+              1
+        	   /
+       	      /  \
+    	27  usr
+    	    / 
+ 	912 eggert
+ 			  \
+ 			   a 63    <-- "a/..."
+ 			   /
+ 			  b 1097   <-- "..b/.."
+
+cat a/b/c
+- Will start looking in the working directory to find the file
+- To search starting from the root, use a "/" at the beginning
+	-> cat /etc/password
+
+- Each process has a working directory
+	[      |     |         |912|root|           | |       ]
+
+You can change directories using chdir("x")
+You can change root using chroot("y")
+
+
+chroot("subdir")  <-- chrooted jail
+- The idea is that the process is not isolated from the rest of the system
+  which should only be used for processes that don't run as root. 
+- As far as the process knows, the only files on this file system are those
+  that can be found in "subdir"
+
+   abc/ ≡ abc
+/a/b/.. ≡ /a    *not always
+    /.. ≡ /
+
+Chrooted Jail
+-------------
+chroot("subdir")
+chroot("/..")  <--no opt, this can't be done
+execl(...)     <--chrooted jail
+
+Get Out of Chrooted Jail
+========================
+	ln /usr/bin/emacs subdir/bin/emacs
+	ln /dev/tty subdir/dev/tty
+	ln /dev/dsk/00 subdir/dev/dsk/00
+
+	open /dev/dsk/00   <- for RW
+	ln <some other file to accessible location>
+
+
+open ("a/b/c/d", O_WRONLY|O_CREAT|..)
+             ^--special, d should not exist
+
+Symbolic Link Loop  (symlink cycle.gif)
+==================
+What happens when you link a file to another file which links back to the first?
+You get into a symbolic link loop.
+
+mkdir a b
+touch a/f b/g
+ln a b/l
+ln b a/k
+
+a/k/l/k/l/k/l/f
+
+rm a/f
+rmdir a/k
+rmdir a
+
+Some file systems allow symbolic link loops, but Linux does not because that is 
+the simplest solution.
+
+Why not?
+- "find" looks for a file
+	- let "find" fix it
+
+- mlink("f")  
+- rmdir("k")  <--loops prevent rmdir from working because others points to it
+
+
+- OS fixes this problem by keeping a link count
+	- count of number of directory entries point at an inode
+	- don't suffice if there are cycles
+
+We call link("a", "b"), what should the OS do?
+  1. OS could check for a cycle dynamically
+  2. Prohibit linking if "a" is a directory
+
+
+Space Allocation for Files  (Data Blocks.png)
+==========================
+
+Direct blocks
+Indirect blocks
+Doubly-Indirect blocks
+
+
+	INODE
+  [   uid    ] 
+  [   time   ]			DATA BLOCKS (8192 bytes)
+  [ ln count ]         [__][__][__][__][__][__][__][__][__][__][__][__][__][__]
+0 [          ]              ^                           ^		(32-bit block numbers)
+. [          ]---------------                           |
+. [          ]                                          |
+a [          ]---------V                                |
+					[_______]                           |
+					[_______]                           |
+					[_______]      [_______]            |
+					[_______]----->[_______]		    |
+					indirect	   [_______]-------------
+					block to       [_______]
+					(2048 bytes)	indirect 
+									block (array of block numbers)
+
+Indirect Blocks - 2048 * 8192 + 10 * 8192 
+Double-Indirect Blocks - 2048 * 2048 * 8192 + 10 * 8192 + 2048 * 8192 = 2^35 bytes
+
+Use lseek to find file data
+- low fragmentation  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
