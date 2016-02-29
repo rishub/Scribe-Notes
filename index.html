@@ -28,11 +28,63 @@
 
 <body id="page-top">
 
+
+    <nav id="mainNav" class="navbar navbar-default navbar-fixed-top">
+        <div class="container-fluid">
+            <!-- Brand and toggle get grouped for better mobile display -->
+            <div class="navbar-header">
+                <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#bs-example-navbar-collapse-1">
+                    <span class="sr-only">Toggle navigation</span>
+                    <span class="icon-bar"></span>
+                    <span class="icon-bar"></span>
+                    <span class="icon-bar"></span>
+                </button>
+            </div>
+
+            <!-- <div class="navbar-header">
+                <img src="img/rishub.jpg" height=30 width=30>
+            </div> -->
+
+            <!-- Collect the nav links, forms, and other content for toggling -->
+            <div class="collapse navbar-collapse" id="bs-example-navbar-collapse-1">
+                <ul class="nav navbar-nav navbar-right">
+                    <li>
+                        <a class="page-scroll" href="#hybrid">Hybrid Data Structure</a>
+                    </li>
+                    <li>
+                        <a class="page-scroll" href="#linux">Linux</a>
+                    </li>
+                    <li>
+                        <a class="page-scroll" href="#"></a>
+                    </li>
+                    <li>
+                        <a class="page-scroll" href="#"></a>
+                    </li>
+                    <li>
+                        <a class="page-scroll" href="#"></a>
+                    </li>
+                    <li>
+                        <a class="page-scroll" href="#"></a>
+                    </li>
+                    <li>
+                        <a class="page-scroll" href="#"></a>
+                    </li>
+                    <li>
+                        <a class="page-scroll" href="#"></a>
+                    </li>
+                </ul>
+            </div>
+            <!-- /.navbar-collapse -->
+        </div>
+        <!-- /.container-fluid -->
+    </nav>
+
+    <br><br><br>
+
     <div class="container">
 
-        <h1>File System Implementation</h1>
-        <h2>CS 111 Lecture 12</h2>
-        <h4>February 22, 2016</h4>
+        <h1>File System cont'd</h1>
+        <h2>CS 111 Lecture 12 (2/22/16)</h2>
         <h4>By: Andy Kuang, Patrick Deshpande, Rishub Kumar, and Stan Jiang</h4>
 
         <br>
@@ -70,47 +122,36 @@
 
 
 
+    <a id="hybrid"></a>
+    <h2>Hybrid Data Structure</h2><br>
+    <p>
+        Exists in main memory and on disk <br>
+        &emsp; - Persistence (Disk) <br>
+        &emsp; - Performance (RAM) 
+
+        <br><br>
+
+        Now let's look at how different file systems handle directories. The RT-11 just has a base directory while the FAT has a tree structure where directories are nested within eachother
+    </p>
+    
+    <br>
+
+    <a id="linux"></a>
+    <h3>Linux Ext3 File System</h3>
+    <br>
+    <p>
+    - Directory Entry Structure <br>
+    32-bit inode number
+    16-bit directory entry length (where the next inode starts)     |
+    8-bit  name length                                              |- varying length
+    8-bit  file type                                                |- entries
+    10-byte file name                                               |
+    </p>    
+    <img src="img/Ext3_Dir_Entry.png">
+    <br><br>
 
 
-
-
-
-    <a id="fragmentation"></a>
-    <h2>Fragmentation</h2>
-
-    <p>Recall the inode and indirect block structure:</p>
-
-    <!-- <img src="inode-block.png" alt="Inode block" height="718" width="975"> -->
-
-    <p>What kind of fragmentation and wasted space can we get with this structure?</p>
-
-    <p>If the file size is 0 bytes, we have no fragmentation. Technically, we have 48 bytes of inode space wasted: 4 bytes per direct block number plus 4 bytes for the indirect block number plus 4 bytes for the indirect^2 block number, which are all unused. If the file size is 1 byte, assuming a block size of 8 KiB (8192 bytes), we have 8191 bytes of wasted space in the block allocated for the file, plus 44 inode bytes wasted.</p>
-
-    <a id="holeyfiles"></a>
-    <h3>Holey Files</h3>
-
-    <p>What if we create an empty file, seek very far into it, and write at that location? Consider the following code:</p>
-
-    <div class="well"><code>
-        int fd = open("foo", O_CREAT|O_WRONLY|O_TRUNC, 066);<br>
-        if (lseek(fd, 1000000000000, SEEK_SET) &lt; 0)<br>
-        &nbsp;&nbsp;error();<br>
-        write(fd, "hello", 5);<br>
-    </code></div>
-
-    <p>This requires the creation of a doubly indirect block.</p>
-
-<!--     <img src="inode-holey.png" alt="Inode holey" height="300" width="683">
- -->
-    <p>This is called a "holey file". Note that the file size is 1000000000005 bytes (although clearly it does not take up that much disk space). In this case, the wasted space is 44 bytes in the inode, 8188 bytes in the indirect^2 block, 8188 bytes in the indirect block, and 8187 bytes in the data block itself.</p>
-
-    <p>Even though the file "appears" to be a trillion bytes in size, if we run the following command:</p>
-
-    <div class="well"><code>
-      $ ls -ls foo
-    </code></div>
-
-    <p>We will see that foo doesn't actually use up very much disk space (the <code>-s</code> argument to ls asks "how much space" does the file use, in blocks).</p>
+    
 
     <a id="holeydatabase"></a>
     <h3>Holey Database</h3>
